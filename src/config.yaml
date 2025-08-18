@@ -1,0 +1,37 @@
+# Global configuration
+aws:
+  region: us-east-1
+  s3_bucket: null
+  characteristics_key: data/processed/characteristics/scaled_annual_data_JFE.parquet
+  returns_prefix: data/processed/returns        
+  factors_key: null  
+
+experiment:
+  seed: 1011
+  panel_years: 10            # expanding window length (years)
+  top_cut: 0.90              # 90th percentile (top decile)
+  hold_months: 12
+  models: [ols, enet, xgb, rf]
+  output_prefix: processed/outputs/Tables_3_to_5
+
+elastic_net:
+  l1_ratio_grid: [0.1, 0.5, 0.9]
+  alpha_grid: [0.0001, 0.001, 0.01, 0.1, 1.0]
+  cv_folds: 5
+
+random_forest:
+  n_estimators: 1000
+  # max_features: auto
+  max_features: sqrt
+  cv_folds: 5
+
+xgb:
+  n_estimators: 500
+  max_depth: 3
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  cv_folds: 5
+
+logging:
+  level: INFO
