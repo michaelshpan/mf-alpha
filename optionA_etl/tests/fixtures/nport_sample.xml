@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NPORT-P>
+  <ReportPeriod>2024-03-31</ReportPeriod>
+  <Series>
+    <SeriesId>SAMPLE_SERIES</SeriesId>
+    <Class>
+      <ClassId>SAMPLE_CLASS</ClassId>
+      <MonthlyTotalReturn1>0.01</MonthlyTotalReturn1>
+      <MonthlyTotalReturn2>0.02</MonthlyTotalReturn2>
+      <MonthlyTotalReturn3>-0.005</MonthlyTotalReturn3>
+      <SalesFlowMon1>1000000</SalesFlowMon1>
+      <ReinvestmentFlowMon1>20000</ReinvestmentFlowMon1>
+      <RedemptionFlowMon1>500000</RedemptionFlowMon1>
+      <SalesFlowMon2>1500000</SalesFlowMon2>
+      <ReinvestmentFlowMon2>30000</ReinvestmentFlowMon2>
+      <RedemptionFlowMon2>400000</RedemptionFlowMon2>
+      <SalesFlowMon3>800000</SalesFlowMon3>
+      <ReinvestmentFlowMon3>15000</ReinvestmentFlowMon3>
+      <RedemptionFlowMon3>200000</RedemptionFlowMon3>
+      <CashNotReported>5000000</CashNotReported>
+      <TotalInvestments>45000000</TotalInvestments>
+    </Class>
+  </Series>
+</NPORT-P>

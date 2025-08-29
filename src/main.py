@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import pickle
 
 from utils import setup_logging, load_config, ensure_dir
 from data_io import read_characteristics, read_returns, write_parquet
@@ -72,6 +73,9 @@ def main():
 
     specs = get_model_specs(cfg)
     seed = cfg["experiment"]["seed"]
+    
+    # Store latest models for prediction
+    latest_models = {}
 
     portf_dates_rows = []
     
@@ -135,7 +139,18 @@ def main():
             X_train = train.drop(columns=[target_col], errors="ignore").values
             y_train = train[target_col].values
 
-            y_hat = fit_and_predict(spec, X_train, y_train, X_test.values, seed)
+            # Get both predictions and trained model (save model from last iteration)
+            is_last_iteration = (t == total_size - panel_len - 1)
+            if is_last_iteration:
+                y_hat, trained_model = fit_and_predict(spec, X_train, y_train, X_test.values, seed, return_model=True)
+                latest_models[model_name] = {
+                    'model': trained_model,
+                    'feature_names': [col for col in train.columns if col != target_col],
+                    'formation_date': formation_date,
+                    'train_size': len(X_train)
+                }
+            else:
+                y_hat = fit_and_predict(spec, X_train, y_train, X_test.values, seed)
 
             w = weights_in_top_funds(y_hat, top_cut)
             portf_ret, w_mat = compute_portfolio_returns(w, fund_rets_block)
@@ -195,6 +210,15 @@ def main():
     ensure_dir(local_out)
     df_returns.to_parquet(local_out / "portfolio_returns.parquet", index=False)
     df_turnover.to_parquet(local_out / "turnover.parquet", index=False)
+    
+    # Save trained models for prediction
+    models_dir = local_out / "models"
+    ensure_dir(models_dir)
+    for model_name, model_info in latest_models.items():
+        model_file = models_dir / f"{model_name}_model.pkl"
+        with open(model_file, 'wb') as f:
+            pickle.dump(model_info, f)
+        logger.info("Saved %s model to %s", model_name, model_file)
 
     # Upload to S3 if requested
     if args.s3_out:

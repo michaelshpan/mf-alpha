@@ -62,7 +62,7 @@ def get_model_specs(cfg) -> Dict[str, ModelSpec]:
     return specs
 
 
-def fit_and_predict(spec: ModelSpec, X_train, y_train, X_test, seed: int):
+def fit_and_predict(spec: ModelSpec, X_train, y_train, X_test, seed: int, return_model: bool = False):
     if spec.param_grid:
         cv = KFold(n_splits=spec.cv_folds, shuffle=True, random_state=seed)
         gs = GridSearchCV(spec.estimator, spec.param_grid, cv=cv, scoring="neg_root_mean_squared_error", n_jobs=-1)
@@ -72,4 +72,7 @@ def fit_and_predict(spec: ModelSpec, X_train, y_train, X_test, seed: int):
         best_est = spec.estimator
         best_est.fit(X_train, y_train)
     y_hat = best_est.predict(X_test)
+    
+    if return_model:
+        return y_hat, best_est
     return y_hat

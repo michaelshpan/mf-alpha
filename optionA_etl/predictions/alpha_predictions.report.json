@@ -1,0 +1,34 @@
+{
+  "summary": {
+    "total_predictions": 19836,
+    "unique_funds": 174,
+    "date_range": {
+      "start": "2019-10-31 00:00:00",
+      "end": "2025-12-31 00:00:00"
+    },
+    "prediction_timestamp": "2025-08-25T16:19:07.879793"
+  },
+  "statistics": {
+    "ensemble_prediction": {
+      "mean": -0.04419065193128521,
+      "median": -0.03488927971219794,
+      "std": 0.05512421237668255,
+      "min": -0.2099687105914104,
+      "max": 0.15482914720020308,
+      "quantiles": {
+        "0.25": -0.09159810052142,
+        "0.5": -0.03488927971219794,
+        "0.75": 0.0026378350807108263
+      }
+    }
+  },
+  "models_used": [
+    "xgb",
+    "rf"
+  ],
+  "config": {
+    "ensemble_method": "mean",
+    "batch_size": 1000,
+    "feature_scaling": true
+  }
+}

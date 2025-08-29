@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data files
+data/
+outputs/
+*.Rdata
+*.csv
+*.parquet
+
+# Documents
+*.pdf
+docs/
+
+# R
+.Rapp.history
+*.R
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+DeMiguel et al replication_files/
+scaled_annual_data_JFE.Rdata
