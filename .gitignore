@@ -15,6 +15,7 @@ build/
 # Data files
 data/
 outputs/
+optionA_etl/sec_rr_datasets/
 *.Rdata
 *.csv
 *.parquet
