@@ -9,6 +9,9 @@ from .factors import get_monthly_ff5_mom
 from .metrics import compute_net_flow, compute_flow_volatility, compute_realized_alpha_lagged, rolling_factor_regressions, value_added
 from .oef_rr_extractor_robust import get_er_turnover_for_entities
 from .manager_tenure import get_manager_data_for_entities
+from .series_class_mapper import SeriesClassMapper
+from .sec_rr_integration import SECRRDataLoader
+from .data_overrides import apply_data_overrides, generate_override_template
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("pilot")
 def load_pilot_list(path: Path)->list[dict]:
@@ -23,12 +26,45 @@ def main():
     appcfg=AppConfig()
     regs=load_pilot_list(Path(a.pilot))
     if not regs: log.error("No registrants found"); sys.exit(2)
+    
+    # Initialize series/class mapper (automatically loads mapping in __init__)
+    log.info("Initializing series/class mapper...")
+    mapper = SeriesClassMapper(cache_path="data/series_class_mapping_cache.csv")
+    
+    # Build lookup of series -> CIK from config
+    series_to_cik = {}
+    cik_series_map = {}  # CIK -> list of series_ids
+    for reg in regs:
+        cik = reg.get("cik")
+        if cik:
+            cik_str = str(int(cik))
+            series_ids = reg.get("series_ids", [])
+            cik_series_map[cik_str] = series_ids
+            for sid in series_ids:
+                series_to_cik[sid] = cik_str
+    
+    log.info("Config specifies %d series IDs across %d CIKs", len(series_to_cik), len(cik_series_map))
+    
+    # Get all valid class IDs for configured series
+    valid_class_ids = set()
+    series_to_classes = {}
+    for series_id in series_to_cik.keys():
+        class_ids = mapper.get_class_for_series(series_id)
+        if class_ids:
+            valid_class_ids.update(class_ids)
+            series_to_classes[series_id] = class_ids
+            log.info("Series %s has %d class IDs: %s", series_id, len(class_ids), class_ids[:3])
+        else:
+            log.warning("No class IDs found for series %s", series_id)
+    
+    log.info("Total valid class IDs from configured series: %d", len(valid_class_ids))
+    
     rows=[]
     for reg in regs:
         cik=reg.get("cik"); 
         if not cik: log.warning("Skip registrant without CIK: %s", reg); continue
         sids=reg.get("series_ids") or []; cids=reg.get("class_ids") or []
-        log.info("Processing CIK %s (%s)", cik, reg.get("name",""))
+        log.info("Processing CIK %s (%s) with series %s", cik, reg.get("name",""), sids)
         filings=list_recent_nport_p_accessions(cik, appcfg, since_yyyymmdd=a.since)
         if not filings: log.info("No NPORT-P filings since %s for CIK %s", a.since, cik); continue
         for f in tqdm(filings, desc=f"CIK {cik} filings"):
@@ -36,11 +72,32 @@ def main():
                 xml=download_filing_xml(cik, f["accession"], f["primary_doc"], appcfg)
                 df=parse_nport_primary_xml(xml)
                 if not df.empty:
-                    df["cik"]=str(int(cik)); df["filing_date"]=pd.to_datetime(f["filing_date"]); rows.append(df)
+                    df["cik"]=str(int(cik))
+                    df["filing_date"]=pd.to_datetime(f["filing_date"])
+                    
+                    # Filter to only include class_ids that belong to configured series
+                    if len(valid_class_ids) > 0:
+                        orig_len = len(df)
+                        df = df[df["class_id"].isin(valid_class_ids)].copy()
+                        log.debug("Filtered CIK %s data from %d to %d rows (valid classes only)", cik, orig_len, len(df))
+                    
+                    # Add series_id column based on class_id mapping
+                    if not df.empty:
+                        df["series_id"] = df["class_id"].apply(lambda cid: mapper.get_series_for_class(cid))
+                        rows.append(df)
             except Exception as e:
                 log.exception("Parse failure for %s %s: %s", f["accession"], f["primary_doc"], e)
+    
     if not rows: log.error("No class-month rows extracted."); sys.exit(3)
-    facts=pd.concat(rows, ignore_index=True); facts=compute_net_flow(facts)
+    facts=pd.concat(rows, ignore_index=True)
+    
+    # Log series_id population status
+    log.info("Facts shape after concat: %s", facts.shape)
+    log.info("Series ID population: %d/%d rows have series_id", 
+             facts["series_id"].notna().sum(), len(facts))
+    log.info("Unique series IDs in data: %s", sorted(facts["series_id"].dropna().unique()))
+    
+    facts=compute_net_flow(facts)
     facts=compute_flow_volatility(facts)
     
     # Merge factor data FIRST to ensure full dataset for regressions
@@ -63,35 +120,82 @@ def main():
     regstats=rolling_factor_regressions(facts_with_factors)
     log.info("Factor regressions produced %d results", len(regstats))
     
-    # Get expense ratios, turnover, and manager data
-    log.info("Fetching expense ratios and turnover from OEF/RR filings...")
-    er_turnover_df = get_er_turnover_for_entities(regs)
+    # Get expense ratios and turnover from SEC RR datasets (primary source)
+    log.info("Fetching expense ratios and turnover from SEC RR datasets...")
+    
+    # Initialize SEC RR data loader
+    try:
+        sec_rr_loader = SECRRDataLoader(base_dir="sec_rr_datasets", use_series_mapping=True)
+        
+        # Extract CIKs from the current data
+        unique_ciks = facts_with_factors['cik'].unique().tolist()
+        log.info(f"Extracting SEC RR data for {len(unique_ciks)} unique CIKs")
+        
+        # Get expense ratio and turnover data from SEC RR datasets
+        sec_rr_df = sec_rr_loader.extract_expense_turnover(ciks=unique_ciks)
+        
+        if not sec_rr_df.empty:
+            log.info(f"Found SEC RR data for {len(sec_rr_df)} records")
+            # Rename columns to match expected format
+            sec_rr_df = sec_rr_df.rename(columns={
+                'expense_ratio': 'net_expense_ratio',
+                'turnover_rate': 'turnover_pct'
+            })
+            er_turnover_df = sec_rr_df
+        else:
+            log.warning("No SEC RR data found")
+            er_turnover_df = pd.DataFrame()
+            
+    except Exception as e:
+        log.error(f"Failed to load SEC RR data: {e}")
+        er_turnover_df = pd.DataFrame()
+    
+    # Fallback to N-1A parsing (DISABLED - will be activated later if requested)
+    use_n1a_fallback = False  # Set to True when instructed
+    
+    if er_turnover_df.empty and use_n1a_fallback:
+        log.info("Fallback: Fetching expense ratios and turnover from N-1A filings...")
+        er_turnover_df = get_er_turnover_for_entities(regs)
+    elif er_turnover_df.empty:
+        log.info("SEC RR data not available, leaving expense/turnover fields blank")
     
     log.info("Fetching manager tenure and fund age from N-1A filings...")
     manager_df = get_manager_data_for_entities(regs)
     
-    # Merge expense ratio and turnover data by CIK (since class_id may be None in external data)
-    log.info("DEBUG: Before OEF/RR merge shape: %s", facts_with_factors.shape)
+    # Merge expense ratio and turnover data with proper class_id/series_id strategy
+    log.info("DEBUG: Before expense/turnover merge shape: %s", facts_with_factors.shape)
     if not er_turnover_df.empty:
-        log.info("DEBUG: OEF/RR data shape: %s", er_turnover_df.shape)
+        log.info("DEBUG: SEC RR data shape: %s", er_turnover_df.shape)
         
-        # Check if any class_ids match between datasets
-        facts_classes = set(facts_with_factors['class_id'].unique())
-        oef_classes = set(er_turnover_df['class_id'].dropna().unique())
-        matching_classes = facts_classes.intersection(oef_classes)
-        log.info("DEBUG: Matching class_ids: %d", len(matching_classes))
-        
-        if len(matching_classes) > 0:
-            # Direct class_id match - safe merge
-            facts_with_factors = facts_with_factors.merge(er_turnover_df[["class_id", "net_expense_ratio", "turnover_pct"]], 
-                               on="class_id", how="left")
+        # Step 1: Merge expense ratios on class_id
+        expense_records = er_turnover_df[er_turnover_df['net_expense_ratio'].notna() & er_turnover_df['class_id'].notna()]
+        if not expense_records.empty:
+            log.info(f"Merging {len(expense_records)} expense ratio records on class_id")
+            facts_with_factors = facts_with_factors.merge(
+                expense_records[['class_id', 'net_expense_ratio']].drop_duplicates(), 
+                on='class_id', 
+                how='left'
+            )
         else:
-            # No direct match - use fund-level data (take first record per CIK to avoid duplication)
-            fund_level_data = er_turnover_df.groupby("cik")[["net_expense_ratio", "turnover_pct"]].first().reset_index()
-            facts_with_factors = facts_with_factors.merge(fund_level_data, on="cik", how="left")
+            facts_with_factors['net_expense_ratio'] = None
+            log.info("No expense ratio data available for class_id merge")
+        
+        # Step 2: Merge turnover rates on series_id  
+        turnover_records = er_turnover_df[er_turnover_df['turnover_pct'].notna() & er_turnover_df['series_id'].notna()]
+        if not turnover_records.empty:
+            log.info(f"Merging {len(turnover_records)} turnover rate records on series_id")
+            facts_with_factors = facts_with_factors.merge(
+                turnover_records[['series_id', 'turnover_pct']].drop_duplicates(), 
+                on='series_id', 
+                how='left'
+            )
+        else:
+            facts_with_factors['turnover_pct'] = None
+            log.info("No turnover rate data available for series_id merge")
             
-        log.info("DEBUG: After OEF/RR merge shape: %s", facts_with_factors.shape)
+        log.info("DEBUG: After expense/turnover merge shape: %s", facts_with_factors.shape)
     else:
+        log.info("No SEC RR data available, setting expense/turnover fields to None")
         facts_with_factors["net_expense_ratio"] = None
         facts_with_factors["turnover_pct"] = None
     
@@ -108,12 +212,25 @@ def main():
         facts_with_factors["manager_tenure"] = None
         facts_with_factors["fund_age"] = None
     
+    # Apply manual data overrides for missing expense ratios, manager tenure, and fund age
+    log.info("Applying manual data overrides for missing values...")
+    
+    # Generate template for missing data (optional - helps users identify what needs overriding)
+    try:
+        generate_override_template(facts_with_factors, "etl/data/missing_data_template.csv")
+    except Exception as e:
+        log.warning(f"Failed to generate override template: {e}")
+    
+    # Apply overrides from manual_overrides.csv file
+    facts_with_factors = apply_data_overrides(facts_with_factors, "etl/data/manual_overrides.csv")
+    
     if len(regstats) > 0:
         # Merge regression results into the facts_with_factors dataset (which includes external data)
         log.info("Merging regression results...")
         log.info("Main data classes: %s", sorted(facts_with_factors["class_id"].unique()))
         log.info("Regression data classes: %s", sorted(regstats["class_id"].unique()) if len(regstats) > 0 else [])
         
+        # Ensure series_id is preserved during merge
         out=facts_with_factors.merge(regstats, on=["class_id","month_end"], how="left")
         
         # Debug: check how many got merged
@@ -176,6 +293,15 @@ def main():
         "value_beta_t": "value beta t-stat",
         "momentum_beta_t": "momentum beta t-stat"
     })
+    # Final validation of series_id column
+    log.info("Final output shape: %s", out.shape)
+    log.info("Series ID in final output: %d/%d rows have series_id", 
+             out["series_id"].notna().sum() if "series_id" in out.columns else 0, len(out))
+    if "series_id" in out.columns:
+        log.info("Unique series IDs in final output: %s", sorted(out["series_id"].dropna().unique()))
+    else:
+        log.error("WARNING: series_id column missing from final output!")
+    
     out_path=Path(a.out); out_path.parent.mkdir(parents=True, exist_ok=True); out.to_parquet(out_path, index=False)
-    log.info("Wrote %s rows to %s", len(out), out_path)
+    log.info("Wrote %s rows to %s with columns: %s", len(out), out_path, list(out.columns)[:10])
 if __name__=="__main__": main()
