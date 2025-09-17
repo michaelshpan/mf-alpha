@@ -2,20 +2,59 @@ registrants:
   - name: "VANGUARD HORIZON FUNDS"
     cik: "0000932471"
     series_ids: ["S000002594"]
-    class_ids: []
+    class_ids: ["C000007114"]
+    # Vanguard Capital Opportunity Fund
+  
   - name: "VANGUARD CHESTER FUNDS"
     cik: "0000752177"
     series_ids: ["S000002568"]
-    class_ids: []  
+    class_ids: ["C000007071"]
+    # Vanguard PRIMECAP Fund  
+
   - name: "FIDELITY CONTRAFUND"
     cik: "0000024238"
     series_ids: ["S000006037"]
-    class_ids: []
-  - name: "GROWTH FUND OF AMERICA"
-    cik: "0000044201"
-    series_ids: ["S000009228"]
-    class_ids: []
+    class_ids: ["C000016601"]
+    # Fidelity Contrafund
+
   - name: "HARBOR FUNDS"
     cik: "0000793769"
     series_ids: ["S000000681"]
-    class_ids: []
+    class_ids: ["C000001973"]
+    # Harbor Capital Appreciation Fund
+
+  - name: "VANGUARD QUANTITATIVE FUNDS"
+    cik: "0000799127"
+    series_ids: ["S000002913"]
+    class_ids: ["C000007980"]
+    # Vanguard Growth and Income Fund
+
+  - name: "VANGUARD WORLD FUND"
+    cik: "0000052848"
+    series_ids: ["S000004444", "S000004453"]
+    class_ids: ["C000012211", "C000012229"]
+    # Vanguard US Growth Fund / Vanguard International Growth Fund
+
+  - name: "VANGUARD TRUSTEES' EQUITY FUND"
+    cik: "0000313850"
+    series_ids: ["S000004389"]
+    class_ids: ["C000012145"]
+    # Vanguard International Value Fund
+
+  - name: "AB CORE OPPORTUNITIES FUND, INC."
+    cik: "0001090504"
+    series_ids: ["S000009999"]
+    class_ids: ["C000027654"]
+    # AB CORE OPPORTUNITIES FUND, INC.
+
+  - name: "T. Rowe Price All-Cap Opportunities Fund, Inc."
+    cik: "0000773485"
+    series_ids: ["S000002104"]
+    class_ids: ["C000005476"]
+    # T. Rowe Price All-Cap Opportunities Fund, Inc.
+
+  - name: "T. Rowe Price New Horizons Fund, Inc."
+    cik: "0000080248"
+    series_ids: ["S000002106"]
+    class_ids: ["C000159684"]
+    # T. Rowe Price New Horizons Fund, Inc.
