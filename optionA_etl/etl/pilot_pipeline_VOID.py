@@ -12,6 +12,7 @@ from .manager_tenure import get_manager_data_for_entities
 from .series_class_mapper import SeriesClassMapper
 from .sec_rr_integration import SECRRDataLoader
 from .data_overrides import apply_data_overrides, generate_override_template
+from .returns_database import MonthlyReturnsDatabase
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("pilot")
 def load_pilot_list(path: Path)->list[dict]:
@@ -23,6 +24,9 @@ def main():
     p.add_argument("--out", default="data/pilot_fact_class_month.parquet")
     p.add_argument("--fees", default="data/fees_turnover_override.csv")
     p.add_argument("--extra-history", type=int, default=36, help="Extra months of historical data to fetch for alpha calculation (default: 36)")
+    p.add_argument("--use-returns-db", action="store_true", help="Use SEC bulk returns database for complete monthly data")
+    p.add_argument("--update-returns-db", action="store_true", help="Update the returns database before processing")
+    p.add_argument("--returns-db-path", default="data/monthly_returns_db", help="Path to returns database")
     a=p.parse_args()
     appcfg=AppConfig()
     
@@ -99,18 +103,87 @@ def main():
     if not rows: log.error("No class-month rows extracted."); sys.exit(3)
     facts=pd.concat(rows, ignore_index=True)
     
+    # Deduplicate N-PORT data (keep most recent filing for each class-month)
+    log.info("Deduplicating N-PORT data...")
+    original_count = len(facts)
+    facts = facts.sort_values(['class_id', 'month_end', 'filing_date'])
+    facts = facts.drop_duplicates(subset=['class_id', 'month_end'], keep='last')
+    log.info(f"Deduplicated: {original_count} → {len(facts)} records (removed {original_count - len(facts)} duplicates)")
+    
+    # Use SEC bulk returns database if requested
+    if a.use_returns_db:
+        log.info("Using SEC bulk returns database for complete monthly data")
+        returns_db = MonthlyReturnsDatabase(db_path=a.returns_db_path)
+        
+        # Update database if requested
+        if a.update_returns_db:
+            log.info("Updating returns database with latest SEC data...")
+            returns_db.initialize_from_pilot_config(a.pilot)
+        
+        # Get database statistics
+        db_stats = returns_db.get_database_stats()
+        if db_stats.get('initialized'):
+            log.info(f"Returns database: {db_stats.get('total_records', 0)} records, "
+                    f"{db_stats.get('unique_classes', 0)} funds")
+            
+            # Enhance facts with complete monthly returns
+            facts_before = len(facts)
+            returns_before = facts['return'].notna().sum()
+            
+            # Get complete monthly returns for each fund
+            enhanced_facts = []
+            for class_id in facts['class_id'].unique():
+                # Get date range for this fund
+                fund_data = facts[facts['class_id'] == class_id]
+                min_date = fund_data['month_end'].min() - pd.DateOffset(months=a.extra_history)
+                max_date = fund_data['month_end'].max()
+                
+                # Get complete monthly series from database
+                db_returns = returns_db.get_complete_monthly_series(
+                    class_id=class_id,
+                    start_date=min_date.strftime('%Y-%m-%d'),
+                    end_date=max_date.strftime('%Y-%m-%d'),
+                    fill_method='none'
+                )
+                
+                if not db_returns.empty:
+                    # Merge with existing fund data
+                    merged = fund_data.merge(
+                        db_returns[['month_end', 'return']].rename(columns={'return': 'db_return'}),
+                        on='month_end',
+                        how='outer'
+                    )
+                    
+                    # Use database return where available
+                    merged['return'] = merged['db_return'].fillna(merged['return'])
+                    
+                    # Fill missing metadata
+                    for col in ['class_id', 'cik', 'series_id']:
+                        if col in merged.columns:
+                            merged[col] = merged[col].fillna(method='ffill').fillna(method='bfill')
+                    
+                    enhanced_facts.append(merged)
+                else:
+                    enhanced_facts.append(fund_data)
+            
+            if enhanced_facts:
+                facts = pd.concat(enhanced_facts, ignore_index=True)
+                facts = facts.drop(columns=['db_return'], errors='ignore')
+                
+                facts_after = len(facts)
+                returns_after = facts['return'].notna().sum()
+                
+                log.info(f"Enhanced with database: {facts_before} → {facts_after} records")
+                log.info(f"Returns coverage: {returns_before} → {returns_after} "
+                        f"({returns_after/facts_after*100:.1f}% coverage)")
+        else:
+            log.warning("Returns database not initialized. Run with --update-returns-db first.")
+    
     # Log series_id population status
     log.info("Facts shape after concat: %s", facts.shape)
     log.info("Series ID population: %d/%d rows have series_id", 
              facts["series_id"].notna().sum(), len(facts))
     log.info("Unique series IDs in data: %s", sorted(facts["series_id"].dropna().unique()))
-    
-    # Deduplicate monthly data - keep most recent filing for each class_id-month_end
-    log.info("Deduplicating monthly data...")
-    original_count = len(facts)
-    facts = facts.sort_values(['class_id', 'month_end', 'filing_date'])
-    facts = facts.drop_duplicates(subset=['class_id', 'month_end'], keep='last')
-    log.info(f"Deduplication: {original_count} → {len(facts)} records (removed {original_count - len(facts)} duplicates)")
     
     facts=compute_net_flow(facts)
     facts=compute_flow_volatility(facts)

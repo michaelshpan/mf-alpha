@@ -63,10 +63,22 @@ def parse_nport_primary_xml(xml_text: str) -> pd.DataFrame:
             else:
                 flows.append((0, 0, 0))
         
-        # Create rows for each month (most recent first)
+        # Create rows for each month in chronological order
+        # rtn1 = most recent month, rtn2 = month-1, rtn3 = month-2
+        # Convert to chronological order: oldest to newest
         for j, rtn in enumerate(returns):
-            month_end = report_date - pd.offsets.MonthEnd(j)
+            # Calculate month_end in chronological order (oldest first)
+            months_back = len(returns) - 1 - j  # 2, 1, 0 for 3 returns
+            month_end = report_date - pd.offsets.MonthEnd(months_back)
+            
+            # Get corresponding flow data (flows are in same order as returns)
             sales, redemptions, reinvest = flows[j] if j < len(flows) else (0, 0, 0)
+            
+            # Data quality validation: flag extreme returns
+            if abs(rtn) > 0.5:  # More than ±50%
+                import logging
+                log = logging.getLogger(__name__)
+                log.warning(f"Extreme return detected: {class_id} {month_end.strftime('%Y-%m')} return={rtn:.1%}")
             
             rows.append({
                 "class_id": class_id,

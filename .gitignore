@@ -41,3 +41,14 @@ Thumbs.db
 # Project specific
 DeMiguel et al replication_files/
 scaled_annual_data_JFE.Rdata
+
+# SEC datasets (too large for GitHub)
+optionA_etl/sec_rr_datasets/
+sec_rr_datasets/
+
+# Large model files
+*.pkl
+outputs/models/
+outputs/local/
+*.xlsx
+*.tsv
