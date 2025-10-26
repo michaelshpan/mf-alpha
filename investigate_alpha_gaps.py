@@ -18,7 +18,7 @@ def load_and_analyze_gaps():
     print("="*70)
     
     # Load both datasets
-    etl_data = pd.read_parquet('optionA_etl/data/pilot_fact_class_month.parquet')
+    etl_data = pd.read_parquet('optionA_etl/data/pilot_fact_class_month_tradefeeds.parquet')
     pred_data = pd.read_parquet('optionA_etl/predictions/alpha.parquet')
     
     print("\n1. OVERALL DATA AVAILABILITY")

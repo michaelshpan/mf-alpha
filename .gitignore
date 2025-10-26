@@ -52,3 +52,35 @@ outputs/models/
 outputs/local/
 *.xlsx
 *.tsv
+
+# Debug and test files
+debug_*.py
+test_*.py
+*_test.py
+check_*.py
+fix_*.py
+plots/
+*.png
+*.jpg
+*.jpeg
+
+# ETL development artifacts
+optionA_etl/debug_*.py
+optionA_etl/test_*.py
+optionA_etl/check_*.py
+optionA_etl/fix_*.py
+optionA_etl/*_test.py
+optionA_etl/plots/
+optionA_etl/JSONvisulizer.py
+optionA_etl/series_class_mapper.py
+
+# Documentation artifacts (keep only final docs)
+optionA_etl/MIGRATION_*.md
+optionA_etl/TRADEFEEDS_*.md
+optionA_etl/*_GUIDE.md
+optionA_etl/*_SUMMARY.md
+optionA_etl/*.json
+
+# Environment files (keep templates)
+.env
+!.env.template

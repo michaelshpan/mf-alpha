@@ -11,6 +11,10 @@ registrants:
     cik: "0000024238"
     series_ids: ["S000006037"]
     class_ids: []
+  - name: "GROWTH FUND OF AMERICA"
+    cik: "0000044201"
+    series_ids: ["S000009228"]
+    class_ids: []
   - name: "HARBOR FUNDS"
     cik: "0000793769"
     series_ids: ["S000000681"]
