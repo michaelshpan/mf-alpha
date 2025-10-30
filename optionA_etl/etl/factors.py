@@ -1,6 +1,5 @@
 import io, zipfile, requests, pandas as pd
 from .config import AppConfig
-from .sec_edgar import _headers
 FF5_URL="https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip"
 MOM_URL="https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_CSV.zip"
 def _download_ff5_csv(url, headers):
@@ -38,8 +37,15 @@ def _download_mom_csv(url, headers):
     # Combine header with data
     csv_content = lines[header_idx] + "\n" + "\n".join(lines[start:end])
     return pd.read_csv(io.StringIO(csv_content.strip()))
-def get_monthly_ff5_mom(cfg:AppConfig)->pd.DataFrame:
-    headers=_headers(cfg)
+def _ff_headers():
+    """Generic headers for Ken French Data Library."""
+    return {
+        "User-Agent": "Research Data Collection contact@example.com",
+        "Accept-Encoding": "gzip, deflate"
+    }
+
+def get_monthly_ff5_mom(cfg:AppConfig=None)->pd.DataFrame:
+    headers=_ff_headers()
     ff5=_download_ff5_csv(FF5_URL, headers); ff5.columns=[c.strip().replace(" ","") for c in ff5.columns]; ff5=ff5.rename(columns={"Mkt-RF":"MKT_RF"})
     ff5["yyyymm"]=ff5.iloc[:,0].astype(str).str[:6]; ff5=ff5.drop(ff5.columns[0],axis=1)
     ff5["date"]=pd.to_datetime(ff5["yyyymm"]+"01",format="%Y%m%d"); ff5["month_end"]=ff5["date"]+pd.offsets.MonthEnd(0); ff5=ff5.drop(columns=["date","yyyymm"])

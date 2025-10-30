@@ -83,11 +83,28 @@ class TradeFeedsClient:
             'ticker': ticker
         }
         
-        # Add date range if provided
+        # Add date range - extend to quarterly boundaries for reliable API response
+        original_date_from = date_from
         if date_from:
-            params['date_from'] = date_from
+            from dateutil.relativedelta import relativedelta
+            start_dt = pd.to_datetime(date_from)
+            
+            # Extend to start of quarter and back one additional quarter for return calculation
+            # This ensures we have enough data for reliable monthly return calculation
+            quarter_start = start_dt.replace(month=((start_dt.month-1)//3)*3+1, day=1)
+            extended_start = quarter_start - relativedelta(months=3)
+            extended_start_str = extended_start.strftime('%Y-%m-%d')
+            
+            params['date_from'] = extended_start_str
+            log.debug(f"Extended start date from {date_from} to {extended_start_str} (quarterly boundaries for reliable API response)")
         if date_to:
-            params['date_to'] = date_to
+            # Extend end date by 1-2 months to ensure target month is included
+            # API appears to exclude last month(s) of requested range
+            end_dt = pd.to_datetime(date_to)
+            extended_end = end_dt + relativedelta(months=2)
+            extended_end_str = extended_end.strftime('%Y-%m-%d')
+            params['date_to'] = extended_end_str
+            log.debug(f"Extended end date from {date_to} to {extended_end_str} to ensure target month inclusion")
 
         # Make API call
         try:
@@ -132,8 +149,20 @@ class TradeFeedsClient:
                                 )
                                 
                                 if not df.empty:
-                                    log.info(f"SUCCESS: Calculated {len(df)} monthly returns from OHLCV data")
-                                    return df
+                                    # Filter to original requested date range
+                                    if original_date_from and date_to:
+                                        start_dt = pd.to_datetime(original_date_from)
+                                        end_dt = pd.to_datetime(date_to)
+                                        df['month_end'] = pd.to_datetime(df['month_end'])
+                                        filtered_df = df[
+                                            (df['month_end'] >= start_dt) & 
+                                            (df['month_end'] <= end_dt)
+                                        ]
+                                        log.info(f"SUCCESS: Calculated {len(df)} monthly returns, filtered to {len(filtered_df)} for requested range")
+                                        return filtered_df
+                                    else:
+                                        log.info(f"SUCCESS: Calculated {len(df)} monthly returns from OHLCV data")
+                                        return df
                                 else:
                                     log.warning("No monthly returns could be calculated from OHLCV data")
                                     return pd.DataFrame()
@@ -209,7 +238,7 @@ class TradeFeedsClient:
                 df.sort_values("date")
                 .groupby("period")
                 .agg(
-                    month_end=("date", "max"),
+                    actual_last_trading_day=("date", "max"),
                     adjustclose=("adjustclose", "last"),
                 )
             )
@@ -217,10 +246,13 @@ class TradeFeedsClient:
             # Calculate monthly returns using adjustclose (dividend-adjusted)
             monthly["return"] = monthly["adjustclose"].pct_change()
             
-            # Convert period to standard format
+            # Convert period to standard format and normalize month_end to calendar month-end
             monthly.reset_index(inplace=True)
-            monthly["month_end"] = monthly["month_end"].dt.date
-            monthly["month_end"] = pd.to_datetime(monthly["month_end"])
+            
+            # Normalize month_end to calendar month-end for consistent merging with other data sources
+            # Use clean datetime (midnight) to match factor data format, not end-of-day nanoseconds
+            monthly["month_end"] = monthly["period"].dt.to_timestamp(how="end").dt.normalize()
+            monthly["actual_trading_day"] = pd.to_datetime(monthly["actual_last_trading_day"])
             
             # Add metadata columns for compatibility with existing pipeline
             monthly["date"] = monthly["month_end"]
@@ -235,7 +267,7 @@ class TradeFeedsClient:
             # Select and order columns for output
             output_columns = [
                 "date", "month_end", "series_id", "series_name", "ticker", 
-                "return", "report_date", "adjustclose"
+                "return", "report_date", "adjustclose", "actual_trading_day"
             ]
             
             result = monthly[output_columns].copy()

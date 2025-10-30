@@ -2,24 +2,21 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 
-def compute_net_flow(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["net_flow"] = df["sales"] + df["reinvest"] - df["redemptions"]
-    return df
+def compute_net_flow(df: pd.DataFrame) -> pd.Series:
+    """Compute net flow as sales + reinvestments - redemptions."""
+    return df["sales"] + df["reinvest"] - df["redemptions"]
 
-def compute_flow_volatility(df: pd.DataFrame, window: int = 12) -> pd.DataFrame:
+def compute_flow_volatility(df: pd.DataFrame, window: int = 12) -> pd.Series:
     """
     Compute rolling volatility of flows (standard deviation) for each class.
     """
-    df = df.copy()
+    # Ensure data is sorted by class and date
     df = df.sort_values(["class_id", "month_end"])
     
     # Calculate rolling standard deviation of net flows by class
-    df["vol_of_flows"] = df.groupby("class_id")["net_flow"].transform(
+    return df.groupby("class_id")["net_flow"].transform(
         lambda x: x.rolling(window=window, min_periods=3).std()
     )
-    
-    return df
 
 def compute_realized_alpha_lagged(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -79,22 +76,29 @@ def rolling_factor_regressions(df: pd.DataFrame, window: int = 36, min_obs: int 
                 continue
     return pd.DataFrame(results)
 
-def value_added(df: pd.DataFrame, er_map: pd.DataFrame, tna_proxy: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    merged = df.merge(er_map, on="class_id", how="left")
+def value_added(df: pd.DataFrame) -> pd.Series:
+    """
+    Compute value added as (alpha - expense_ratio) * lagged_TNA.
+    Expects df to have columns: realized_alpha, net_expense_ratio, tna (or total_investments)
+    """
+    # Ensure data is sorted by class and date
+    df = df.sort_values(["class_id", "month_end"])
     
-    if len(tna_proxy) > 0:
-        merged = merged.merge(tna_proxy.rename(columns={"tna":"tna_proxy"}), on=["class_id","month_end"], how="left")
-    else:
-        merged["tna_proxy"] = None
-        
-    merged = merged.sort_values(["class_id","month_end"])
-    merged["tna_lag"] = merged.groupby("class_id")["tna_proxy"].shift(1)
+    # Use TNA or total_investments
+    tna_col = 'tna' if 'tna' in df.columns else 'total_investments'
     
-    # Calculate value added, handling missing expense ratio
-    if "net_expense_ratio" in merged.columns and "alpha_hat" in merged.columns:
-        merged["value_added"] = (merged["alpha_hat"] - merged["net_expense_ratio"]) * merged["tna_lag"]
+    if tna_col not in df.columns:
+        # No TNA data available
+        return pd.Series(index=df.index, dtype=float)
+    
+    # Calculate lagged TNA
+    tna_lag = df.groupby("class_id")[tna_col].shift(1)
+    
+    # Calculate value added, handling missing data
+    if "net_expense_ratio" in df.columns and "realized_alpha" in df.columns:
+        alpha = df["realized_alpha"].fillna(0)
+        expense = df["net_expense_ratio"].fillna(0)
+        return (alpha - expense) * tna_lag
     else:
-        merged["value_added"] = None
-        
-    return merged
+        # Missing required columns
+        return pd.Series(index=df.index, dtype=float)
