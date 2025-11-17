@@ -23,7 +23,7 @@ from .config import AppConfig
 from .sec_edgar import get_submissions_for_cik
 from .sec_client import SECClient
 from .nport_parser import parse_nport_primary_xml
-from .oef_rr_extractor_robust import get_er_turnover_for_entities
+from .sec_rr_integration import SECRRDataLoader
 from .manager_tenure import get_manager_data_for_entities
 
 log = logging.getLogger(__name__)
@@ -271,7 +271,7 @@ class MutualFundDataFetcher:
                 continue
             
             try:
-                # Fetch from Tradefeeds
+                # Fetch from Tradefeeds (auto-chunks for long ranges)
                 df = self.tradefeeds.get_mutual_fund_returns(
                     series_id=series_id,
                     ticker=ticker,
@@ -474,7 +474,7 @@ class MutualFundDataFetcher:
         fund_selection: pd.DataFrame
     ) -> pd.DataFrame:
         """
-        Fetch expense ratios and turnover from SEC Risk/Return datasets.
+        Fetch expense ratios and turnover from SEC Risk/Return TSV datasets.
         
         Args:
             fund_selection: DataFrame with fund identifiers
@@ -482,38 +482,40 @@ class MutualFundDataFetcher:
         Returns:
             DataFrame with expense and turnover data
         """
-        log.info("Fetching expense and turnover data")
+        log.info("Fetching expense and turnover data from SEC RR datasets")
         
         try:
-            # Prepare entities for expense/turnover extraction
-            entities = []
-            for cik in fund_selection['cik'].unique():
-                if pd.isna(cik):
-                    continue
-                
-                cik_funds = fund_selection[fund_selection['cik'] == cik]
-                entities.append({
-                    'cik': cik,
-                    'series_ids': cik_funds['series_id'].unique().tolist(),
-                    'class_ids': cik_funds['class_id'].unique().tolist()
-                })
+            # Initialize SEC RR data loader
+            sec_rr_loader = SECRRDataLoader(base_dir="sec_rr_datasets", use_series_mapping=True)
             
-            # Extract expense and turnover data
-            expense_turnover = get_er_turnover_for_entities(entities)
+            # Extract unique CIKs from fund selection
+            unique_ciks = fund_selection['cik'].dropna().astype(int).unique().tolist()
+            log.info(f"Extracting SEC RR data for {len(unique_ciks)} unique CIKs")
+            
+            # Get expense ratio and turnover data from SEC RR TSV datasets
+            expense_turnover = sec_rr_loader.extract_expense_turnover(ciks=unique_ciks)
             
             if not expense_turnover.empty:
-                log.info(f"Fetched expense/turnover for {len(expense_turnover)} funds")
+                log.info(f"Fetched expense/turnover for {len(expense_turnover)} records from SEC RR datasets")
+                
+                # Rename columns to match expected format
+                expense_turnover = expense_turnover.rename(columns={
+                    'expense_ratio': 'net_expense_ratio',
+                    'turnover_rate': 'turnover_pct'
+                })
                 
                 # Check for duplicates (shouldn't happen for static data)
                 duplicates = self.duplicate_detector.check_duplicates(
                     expense_turnover, "expense_turnover"
                 )
+            else:
+                log.warning("No SEC RR data found for expense/turnover")
                 
             return expense_turnover
             
         except Exception as e:
-            log.error(f"Failed to fetch expense/turnover data: {e}")
-            self.missing_data_report.append(f"Expense/turnover fetch failed: {e}")
+            log.error(f"Failed to fetch expense/turnover data from SEC RR datasets: {e}")
+            self.missing_data_report.append(f"SEC RR expense/turnover fetch failed: {e}")
             return pd.DataFrame()
     
     def fetch_manager_tenure_data(
@@ -607,14 +609,14 @@ class MutualFundDataFetcher:
                     # Parse TNA data
                     tna_data = parse_nport_primary_xml(xml_content)
                     
-                    if not tna_data.empty and 'total_investments' in tna_data.columns:
+                    if not tna_data.empty and ('tna' in tna_data.columns or 'total_investments' in tna_data.columns):
                         # N-PORT parser returns DataFrame with TNA data
                         # Add filing date and map to fund classes
                         tna_data = tna_data.copy()
                         tna_data['filing_date'] = filing['filing_date']
                         
-                        # Rename columns for consistency
-                        if 'total_investments' in tna_data.columns:
+                        # Ensure TNA column exists - prefer actual TNA over total_investments
+                        if 'tna' not in tna_data.columns and 'total_investments' in tna_data.columns:
                             tna_data['tna'] = tna_data['total_investments']
                         
                         # Map to all classes in this CIK that match the data

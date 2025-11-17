@@ -213,13 +213,40 @@ class SECRRDataLoader:
                         'quarter': best_record['quarter'] if 'quarter' in best_record else None,
                     })
         
-        # Process turnover rates (series_id level)  
+        # Process turnover rates (both series_id and class_id level)  
         turnover_data = df[df['metric_type'] == 'turnover_rate'].copy()
         series_turnover = {}
+        class_turnover = {}
         
         if not turnover_data.empty:
-            for (cik, series_id), group in turnover_data.groupby(['cik', 'series']):
-                if pd.notna(series_id):  # Only process records with valid series_id
+            # First, process class-level turnover data (from series mapping)
+            class_level_turnover = turnover_data[turnover_data['class'].notna()]
+            for (cik, class_id), group in class_level_turnover.groupby(['cik', 'class']):
+                if pd.notna(class_id):
+                    # Sort by ADSH priority (highest last 6 digits first)
+                    group = group.sort_values(['adsh_priority', 'filed'], ascending=[False, False])
+                    best_record = group.iloc[0]
+                    
+                    turnover_rate = best_record['value']
+                    # Convert percentage to decimal if needed
+                    if pd.notna(turnover_rate) and turnover_rate > 10:
+                        turnover_rate = turnover_rate / 100.0
+                    
+                    # Add class-level turnover record
+                    processed.append({
+                        'cik': str(cik).lstrip('0') or '0',
+                        'class_id': class_id,
+                        'series_id': best_record['series'] if pd.notna(best_record['series']) else None,
+                        'expense_ratio': None,
+                        'turnover_rate': turnover_rate,
+                        'filing_date': best_record['filed'] if 'filed' in best_record else None,
+                        'quarter': best_record['quarter'] if 'quarter' in best_record else None,
+                    })
+            
+            # Then, process series-level turnover data  
+            series_level_turnover = turnover_data[turnover_data['class'].isna() & turnover_data['series'].notna()]
+            for (cik, series_id), group in series_level_turnover.groupby(['cik', 'series']):
+                if pd.notna(series_id):
                     # Sort by ADSH priority (highest last 6 digits first)
                     group = group.sort_values(['adsh_priority', 'filed'], ascending=[False, False])
                     best_record = group.iloc[0]
@@ -393,6 +420,11 @@ def integrate_sec_rr_data(pilot_data_path: str = "data/pilot_fact_class_month.pa
     # Save enhanced data
     enhanced_df.to_parquet(output_path, index=False)
     log.info(f"Saved enhanced data to {output_path}")
+    
+    # Also save as CSV
+    csv_path = Path(output_path).with_suffix('.csv')
+    enhanced_df.to_csv(csv_path, index=False)
+    log.info(f"Saved enhanced data to {csv_path}")
     
     # Print summary statistics
     print("\n=== Integration Summary ===")

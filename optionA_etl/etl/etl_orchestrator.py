@@ -23,6 +23,7 @@ from .metrics import (
     rolling_factor_regressions,
     value_added
 )
+from .data_overrides import DataOverrideProcessor
 
 log = logging.getLogger(__name__)
 
@@ -271,30 +272,105 @@ class ETLOrchestrator:
             )
             log.info(f"Merged flow data: {len(flows)} records")
         
-        # Merge TNA
+        # Merge TNA (handle multiple column names)
         if 'tna' in self.raw_data and not self.raw_data['tna'].empty:
             tna = self.raw_data['tna'].copy()
             tna['month_end'] = pd.to_datetime(tna['month_end'])
             
-            combined = combined.merge(
-                tna[['class_id', 'month_end', 'tna']],
-                on=['class_id', 'month_end'],
-                how='left'
-            )
-            log.info(f"Merged TNA data: {len(tna)} records")
+            # Determine TNA column name
+            tna_column = None
+            if 'tna' in tna.columns:
+                tna_column = 'tna'
+            elif 'total_investments' in tna.columns:
+                tna_column = 'total_investments'
+                # Standardize column name for downstream processing
+                tna['tna'] = tna['total_investments']
+            
+            if tna_column:
+                # Select merge columns
+                merge_cols = ['class_id', 'month_end']
+                value_cols = ['tna']  # Always use 'tna' as standardized name
+                
+                if tna_column in tna.columns:
+                    combined = combined.merge(
+                        tna[merge_cols + value_cols],
+                        on=merge_cols,
+                        how='left'
+                    )
+                    
+                    tna_coverage = combined['tna'].notna().sum()
+                    log.info(f"Merged TNA data: {len(tna)} records")
+                    log.info(f"TNA coverage: {tna_coverage}/{len(combined)} ({tna_coverage/len(combined)*100:.1f}%)")
+                    
+                    # Also compute tna_lag for value_added calculation
+                    combined = combined.sort_values(['class_id', 'month_end'])
+                    combined['tna_lag'] = combined.groupby('class_id')['tna'].shift(1)
+                    
+                    tna_lag_coverage = combined['tna_lag'].notna().sum()
+                    log.info(f"TNA lag coverage: {tna_lag_coverage}/{len(combined)} ({tna_lag_coverage/len(combined)*100:.1f}%)")
+            else:
+                log.warning("TNA data found but no recognized TNA column (tna, total_investments)")
+        else:
+            log.warning("No TNA data available for merging")
         
         # Merge expense/turnover (static data, forward-fill)
         if 'expense_turnover' in self.raw_data and not self.raw_data['expense_turnover'].empty:
             exp_turn = self.raw_data['expense_turnover'].copy()
             
-            # Merge on class_id only (not time-varying)
+            # Check if data already has SEC class IDs or needs mapping from tickers
             if 'class_id' in exp_turn.columns:
-                combined = combined.merge(
-                    exp_turn[['class_id', 'net_expense_ratio', 'turnover_pct']],
-                    on='class_id',
-                    how='left'
+                # Check if class_id values are already SEC class IDs (format: C followed by digits)
+                sample_class_ids = exp_turn['class_id'].dropna().head(5).astype(str)
+                has_sec_class_ids = all(
+                    class_id.startswith('C') and class_id[1:].isdigit() 
+                    for class_id in sample_class_ids if class_id != 'None'
                 )
-                log.info(f"Merged expense/turnover data")
+                
+                if has_sec_class_ids:
+                    # Data already has SEC class IDs, merge directly
+                    log.info(f"SEC RR data already has proper class IDs, merging directly ({len(exp_turn)} records)")
+                    combined = combined.merge(
+                        exp_turn[['class_id', 'net_expense_ratio', 'turnover_pct']],
+                        on='class_id',
+                        how='left'
+                    )
+                    log.info(f"Merged expense/turnover data directly using SEC class IDs")
+                else:
+                    # Data has ticker-based class IDs, need mapping
+                    log.info(f"Data has ticker-based class IDs, applying mapping")
+                    
+                    # Create mapping from ticker to SEC class_id
+                    ticker_to_sec_class = {}
+                    if hasattr(self, 'identifier_mapper') and self.identifier_mapper:
+                        mapping_df = self.identifier_mapper.mapping_df
+                        for _, row in mapping_df.iterrows():
+                            ticker = row.get('ticker')
+                            sec_class_id = row.get('class_id')
+                            if ticker and sec_class_id:
+                                ticker_to_sec_class[ticker] = sec_class_id
+                    
+                    # Map OEF/RR ticker-based class_ids to SEC class_ids
+                    exp_turn['sec_class_id'] = exp_turn['class_id'].map(ticker_to_sec_class)
+                    
+                    # Log mapping results
+                    mapped_count = exp_turn['sec_class_id'].notna().sum()
+                    log.info(f"Mapped {mapped_count}/{len(exp_turn)} OEF/RR records to SEC class IDs")
+                    
+                    # Keep records that successfully mapped
+                    exp_turn_mapped = exp_turn[exp_turn['sec_class_id'].notna()].copy()
+                    
+                    if not exp_turn_mapped.empty:
+                        # Use sec_class_id for merging
+                        combined = combined.merge(
+                            exp_turn_mapped[['sec_class_id', 'net_expense_ratio', 'turnover_pct']].rename(
+                                columns={'sec_class_id': 'class_id'}
+                            ),
+                            on='class_id',
+                            how='left'
+                        )
+                        log.info(f"Merged expense/turnover data using class ID mapping")
+                    else:
+                        log.warning("No OEF/RR records could be mapped to SEC class IDs")
         
         # Merge manager tenure (static data)
         if 'manager_tenure' in self.raw_data and not self.raw_data['manager_tenure'].empty:
@@ -309,7 +385,57 @@ class ETLOrchestrator:
                 log.info(f"Merged manager tenure data")
         
         log.info(f"Combined dataset: {len(combined)} records, {len(combined.columns)} columns")
+        
+        # Apply manual overrides after all merges
+        combined = self._apply_manual_overrides(combined)
+        
         return combined
+    
+    def _apply_manual_overrides(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply manual override data from CSV files."""
+        log.info("Applying manual override data")
+        
+        # Path to manual overrides file
+        override_file = Path("etl/data/manual_overrides.csv")
+        if not override_file.exists():
+            # Try relative to current directory
+            override_file = Path("optionA_etl/etl/data/manual_overrides.csv")
+        
+        if not override_file.exists():
+            log.warning(f"Manual override file not found at {override_file}")
+            return df
+        
+        try:
+            # Initialize override processor
+            processor = DataOverrideProcessor(str(override_file))
+            
+            # Apply overrides
+            df_with_overrides = processor.apply_overrides(df)
+            
+            # Log coverage improvements
+            coverage_before = {}
+            coverage_after = {}
+            override_fields = ['net_expense_ratio', 'manager_tenure', 'fund_age']
+            
+            for field in override_fields:
+                if field in df.columns:
+                    coverage_before[field] = (~df[field].isna()).sum()
+                if field in df_with_overrides.columns:
+                    coverage_after[field] = (~df_with_overrides[field].isna()).sum()
+            
+            log.info("Override application results:")
+            for field in override_fields:
+                if field in coverage_before and field in coverage_after:
+                    before = coverage_before[field]
+                    after = coverage_after[field]
+                    improvement = after - before
+                    log.info(f"  {field}: {before} → {after} records (+{improvement})")
+            
+            return df_with_overrides
+            
+        except Exception as e:
+            log.error(f"Failed to apply manual overrides: {e}")
+            return df
     
     def _compute_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute all derived metrics."""
@@ -407,7 +533,7 @@ class ETLOrchestrator:
         
         # Check data completeness for key fields
         required_fields = [
-            'class_id', 'month_end', 'return', 'realized_alpha'
+            'class_id', 'month_end', 'return'
         ]
         
         for field in required_fields:
@@ -436,6 +562,8 @@ class ETLOrchestrator:
         output_file = self.output_dir / f"mutual_fund_data_{start_date}_{end_date}_{timestamp}.parquet"
         df.to_parquet(output_file, index=False)
         log.info(f"Saved output to {output_file}")
+        df.to_csv(output_file.with_suffix('.csv'), index=False)
+        log.info(f"Saved output to {output_file.with_suffix('.csv')}")
         
         # Save metadata
         metadata = {
@@ -470,9 +598,9 @@ class ETLOrchestrator:
         
         key_fields = [
             'realized_alpha', 'flows', 'value_added', 'vol_of_flows',
-            'tna', 'net_expense_ratio', 'fund_age', 'manager_tenure',
+            'tna', 'tna_lag', 'net_expense_ratio', 'fund_age', 'manager_tenure',
             'turnover_pct', 'MKT_RF', 'SMB', 'HML', 'RMW', 'CMA', 'MOM',
-            'adj_r_squared', 'return'
+            'R2', 'return', 'net_flow'
         ]
         
         for field in key_fields:
